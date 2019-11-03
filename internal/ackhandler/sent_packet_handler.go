@@ -25,7 +25,9 @@ type packetNumberSpace struct {
 	history *sentPacketHistory
 	pns     *packetNumberGenerator
 
-	lossTime     time.Time
+	lossTime                       time.Time
+	lastSentAckElicitingPacketTime time.Time
+
 	largestAcked protocol.PacketNumber
 	largestSent  protocol.PacketNumber
 }
@@ -40,9 +42,6 @@ func newPacketNumberSpace(initialPN protocol.PacketNumber) *packetNumberSpace {
 }
 
 type sentPacketHandler struct {
-	lastSentAckElicitingPacketTime time.Time // only applies to the application-data packet number space
-	lastSentCryptoPacketTime       time.Time
-
 	nextSendTime time.Time
 
 	initialPackets   *packetNumberSpace
@@ -153,10 +152,7 @@ func (h *sentPacketHandler) sentPacketImpl(packet *Packet) bool /* is ack-elicit
 	isAckEliciting := len(packet.Frames) > 0
 
 	if isAckEliciting {
-		if packet.EncryptionLevel != protocol.Encryption1RTT {
-			h.lastSentCryptoPacketTime = packet.SendTime
-		}
-		h.lastSentAckElicitingPacketTime = packet.SendTime
+		pnSpace.lastSentAckElicitingPacketTime = packet.SendTime
 		packet.includedInBytesInFlight = true
 		h.bytesInFlight += packet.Length
 		if h.numProbesToSend > 0 {
@@ -281,7 +277,7 @@ func (h *sentPacketHandler) determineNewlyAckedPackets(
 	return ackedPackets, err
 }
 
-func (h *sentPacketHandler) getEarliestLossTime() (time.Time, protocol.EncryptionLevel) {
+func (h *sentPacketHandler) getEarliestLossTimeAndSpace() (time.Time, protocol.EncryptionLevel) {
 	var encLevel protocol.EncryptionLevel
 	var lossTime time.Time
 
@@ -300,6 +296,26 @@ func (h *sentPacketHandler) getEarliestLossTime() (time.Time, protocol.Encryptio
 	return lossTime, encLevel
 }
 
+// same logic as getEarliestLossTimeAndSpace, but for lastSentAckElicitingPacketTime instead of lossTime
+func (h *sentPacketHandler) getEarliestSentTimeAndSpace() (time.Time, protocol.EncryptionLevel) {
+	var encLevel protocol.EncryptionLevel
+	var sentTime time.Time
+
+	if h.initialPackets != nil {
+		sentTime = h.initialPackets.lastSentAckElicitingPacketTime
+		encLevel = protocol.EncryptionInitial
+	}
+	if h.handshakePackets != nil && (sentTime.IsZero() || (!h.handshakePackets.lastSentAckElicitingPacketTime.IsZero() && h.handshakePackets.lastSentAckElicitingPacketTime.Before(sentTime))) {
+		sentTime = h.handshakePackets.lastSentAckElicitingPacketTime
+		encLevel = protocol.EncryptionHandshake
+	}
+	if sentTime.IsZero() || (!h.oneRTTPackets.lastSentAckElicitingPacketTime.IsZero() && h.oneRTTPackets.lastSentAckElicitingPacketTime.Before(sentTime)) {
+		sentTime = h.oneRTTPackets.lastSentAckElicitingPacketTime
+		encLevel = protocol.Encryption1RTT
+	}
+	return sentTime, encLevel
+}
+
 func (h *sentPacketHandler) hasOutstandingCryptoPackets() bool {
 	var hasInitial, hasHandshake bool
 	if h.initialPackets != nil {
@@ -316,7 +332,7 @@ func (h *sentPacketHandler) hasOutstandingPackets() bool {
 }
 
 func (h *sentPacketHandler) setLossDetectionTimer() {
-	if lossTime, _ := h.getEarliestLossTime(); !lossTime.IsZero() {
+	if lossTime, _ := h.getEarliestLossTimeAndSpace(); !lossTime.IsZero() {
 		// Early retransmit timer or time loss detection.
 		h.alarm = lossTime
 	}
@@ -329,7 +345,8 @@ func (h *sentPacketHandler) setLossDetectionTimer() {
 	}
 
 	// PTO alarm
-	h.alarm = h.lastSentAckElicitingPacketTime.Add(h.rttStats.PTO(true) << h.ptoCount)
+	sentTime, encLevel := h.getEarliestSentTimeAndSpace()
+	h.alarm = sentTime.Add(h.rttStats.PTO(encLevel == protocol.Encryption1RTT) << h.ptoCount)
 }
 
 func (h *sentPacketHandler) detectLostPackets(
@@ -415,10 +432,10 @@ func (h *sentPacketHandler) OnLossDetectionTimeout() error {
 }
 
 func (h *sentPacketHandler) onVerifiedLossDetectionTimeout() error {
-	lossTime, encLevel := h.getEarliestLossTime()
-	if !lossTime.IsZero() {
+	earliestLossTime, encLevel := h.getEarliestLossTimeAndSpace()
+	if !earliestLossTime.IsZero() {
 		if h.logger.Debug() {
-			h.logger.Debugf("Loss detection alarm fired in loss timer mode. Loss time: %s", lossTime)
+			h.logger.Debugf("Loss detection alarm fired in loss timer mode. Loss time: %s", earliestLossTime)
 		}
 		// Early retransmit or time loss detection
 		return h.detectLostPackets(time.Now(), encLevel, h.bytesInFlight)

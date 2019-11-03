@@ -307,6 +307,7 @@ func (p *packetPacker) maybePackCryptoPacket() (*packedPacket, error) {
 	if errInitialSealer == handshake.ErrKeysDropped &&
 		errHandshakeSealer == handshake.ErrKeysDropped {
 		p.handshakeConfirmed = true
+		return nil, nil
 	}
 
 	hasData := p.initialStream.HasData()
