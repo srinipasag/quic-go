@@ -57,3 +57,16 @@ http.Client{
 ## Contributing
 
 We are always happy to welcome new contributors! We have a number of self-contained issues that are suitable for first-time contributors, they are tagged with [help wanted](https://github.com/lucas-clemente/quic-go/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22). If you have any questions, please feel free to reach out by opening an issue or leaving a comment.
+
+## Added by Srini. 
+/Users/spasagadugula/Documents/Splunk/SRC/QUIC/quic-go/example/echo
+
+spasagadugula-mbp-57c61:echo spasagadugula$ go run quicServer.go
+spasagadugula-mbp-57c61:echo spasagadugula$ go run quicClient.go
+
+Next Steps: 
+Notes:
+	- Async api 
+	- C++ client api
+	- Cloud services
+Integrate server code to splunk
